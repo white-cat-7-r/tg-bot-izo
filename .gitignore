@@ -1,4 +1,15 @@
 .env
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.idea/
+.vscode/
+*.db
+*.sqlite3
+docker-compose.override.yml
 .mimocode/
