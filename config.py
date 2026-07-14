@@ -1,5 +1,23 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
+import enum
+
+
+class Plan(str, enum.Enum):
+    FREE = "free"
+    STANDARD = "standard"
+    EXTENDED = "extended"
+    UNLIMITED = "unlimited"
+
+
+TOKEN_COST_PER_GENERATION = 5
+
+PLAN_CONFIGS = {
+    Plan.FREE: {"daily_tokens": 50, "price": 0},
+    Plan.STANDARD: {"daily_tokens": 200, "price": 500},
+    Plan.EXTENDED: {"daily_tokens": 500, "price": 900},
+    Plan.UNLIMITED: {"daily_tokens": None, "price": 1300},
+}
 
 
 class Settings(BaseSettings):
@@ -13,8 +31,10 @@ class Settings(BaseSettings):
     
     DATABASE_URL: str = Field(..., description="PostgreSQL connection URL")
     
-    PRICE_PER_PROCESSING: int = Field(default=100, description="Цена обработки в рублях")
+    PRICE_PER_PROCESSING: int = Field(default=100, description="Цена обработки в рублях (legacy)")
     WEBHOOK_URL: str = Field(default="", description="URL для webhook ЮKassa")
+    
+    TEST_USER_ID: int = Field(default=0, description="Telegram ID тестового аккаунта с безлимитом")
     
     class Config:
         env_file = ".env"
