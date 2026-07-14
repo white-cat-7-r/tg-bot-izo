@@ -126,13 +126,21 @@ async def main():
                     select(User).where(User.telegram_id == callback.from_user.id)
                 )
                 user = result.scalar_one()
-                await activate_plan(session, user, Plan.FREE)
-            await callback.message.edit_text(
-                "✅ Бесплатный тариф активирован!\n50 токенов начисляются ежедневно.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
-                ]),
-            )
+                if user.plan == Plan.FREE:
+                    await callback.message.edit_text(
+                        "ℹ️ Это уже ваш текущий тариф.\n50 токенов начисляются ежедневно.",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
+                        ]),
+                    )
+                else:
+                    await activate_plan(session, user, Plan.FREE)
+                    await callback.message.edit_text(
+                        "✅ Бесплатный тариф активирован!\n50 токенов начисляются ежедневно.",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
+                        ]),
+                    )
         else:
             plan_names = {
                 Plan.STANDARD: "⭐ Стандарт",
