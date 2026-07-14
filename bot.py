@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -34,7 +35,7 @@ async def main():
     dp = Dispatcher(storage=storage)
 
     # === /start ===
-    @dp.message(F.command("start"))
+    @dp.message(Command("start"))
     async def cmd_start(message: Message):
         await get_or_create_user(
             telegram_id=message.from_user.id,
