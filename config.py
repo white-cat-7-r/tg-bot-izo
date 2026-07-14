@@ -23,6 +23,9 @@ PLAN_CONFIGS = {
 class Settings(BaseSettings):
     BOT_TOKEN: str = Field(..., description="Telegram Bot Token")
 
+    YOOMONEY_SHOP_ID: str = Field(default="YOUR_SHOP_ID", description="YouMoney Shop ID")
+    YOOMONEY_SECRET_KEY: str = Field(default="YOUR_SECRET_KEY", description="YouMoney Secret Key")
+
     DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./bot.db")
 
     TEST_USER_ID: int = Field(default=0, description="Telegram ID тестового аккаунта")

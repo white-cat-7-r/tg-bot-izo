@@ -11,10 +11,11 @@ from sqlalchemy import select
 from config import settings, TOKEN_COST_PER_GENERATION, Plan
 from database import init_db, async_session, get_or_create_user
 from models import User, ProcessingHistory
-from keyboards.inline import main_menu_keyboard, styles_keyboard, confirm_keyboard
+from keyboards.inline import main_menu_keyboard, styles_keyboard, confirm_keyboard, plans_keyboard
 from ai_processor import generate_image
 from utils.styles import get_style_prompt, STYLES
-from token_manager import deduct_tokens, reset_daily_tokens
+from token_manager import deduct_tokens, reset_daily_tokens, activate_plan
+from config import PLAN_CONFIGS
 import io
 
 logging.basicConfig(level=logging.INFO)
@@ -54,25 +55,153 @@ async def main():
         await callback.message.edit_text("Выбери действие:", reply_markup=main_menu_keyboard())
         await callback.answer()
 
-    # === Balance / Plans (stubs) ===
+    # === Balance ===
     @dp.callback_query(F.data == "balance")
     async def show_balance(callback: CallbackQuery):
-        await callback.message.edit_text(
-            "💰 Баланс\n\nТарифы и оплата скоро будут доступны.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
-            ]),
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == callback.from_user.id)
+            )
+            user = result.scalar_one()
+            user = await reset_daily_tokens(session, user)
+
+        plan_names = {
+            Plan.FREE: "🆓 Бесплатный",
+            Plan.STANDARD: "⭐ Стандарт",
+            Plan.EXTENDED: "💎 Расширенный",
+            Plan.UNLIMITED: "♾️ Безлимит",
+        }
+        config = PLAN_CONFIGS[user.plan]
+        tokens_display = "∞" if user.plan == Plan.UNLIMITED else user.tokens
+        limit_display = config["daily_tokens"] if config["daily_tokens"] else "∞"
+
+        text = (
+            f"💰 {plan_names[user.plan]}\n\n"
+            f"🪙 Токены: {tokens_display}\n"
+            f"📊 Использовано сегодня: {user.daily_tokens_used} / {limit_display}\n"
         )
+        if user.plan_expires_at:
+            text += f"📅 Действует до: {user.plan_expires_at.strftime('%d.%m.%Y')}\n"
+
+        if user.plan == Plan.FREE:
+            text += "\nКупи тариф для увеличения лимита:"
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛒 Купить тариф", callback_data="plans")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
+        ])
+        await callback.message.edit_text(text, reply_markup=kb)
         await callback.answer()
 
+    # === Plans ===
     @dp.callback_query(F.data == "plans")
     async def show_plans(callback: CallbackQuery):
         await callback.message.edit_text(
-            "🛒 Тарифы скоро будут доступны.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
-            ]),
+            "🛒 Выбери тариф:\n\n"
+            "🆓 Бесплатный — 50 токенов/день\n"
+            "⭐ Стандарт — 200 токенов/день — 500₽/мес\n"
+            "💎 Расширенный — 500 токенов/день — 900₽/мес\n"
+            "♾️ Безлимит — 1300₽/мес",
+            reply_markup=plans_keyboard(),
         )
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("plan:"))
+    async def select_plan(callback: CallbackQuery):
+        plan_name = callback.data.split(":")[1]
+        try:
+            plan = Plan(plan_name)
+        except ValueError:
+            await callback.answer("Неизвестный тариф", show_alert=True)
+            return
+
+        config = PLAN_CONFIGS[plan]
+
+        if plan == Plan.FREE:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(User).where(User.telegram_id == callback.from_user.id)
+                )
+                user = result.scalar_one()
+                await activate_plan(session, user, Plan.FREE)
+            await callback.message.edit_text(
+                "✅ Бесплатный тариф активирован!\n50 токенов начисляются ежедневно.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
+                ]),
+            )
+        else:
+            plan_names = {
+                Plan.STANDARD: "⭐ Стандарт",
+                Plan.EXTENDED: "💎 Расширенный",
+                Plan.UNLIMITED: "♾️ Безлимит",
+            }
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"💳 Купить за {config['price']}₽",
+                    callback_data=f"plan_buy:{plan.value}",
+                )],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="plans")],
+            ])
+            await callback.message.edit_text(
+                f"{plan_names[plan]}\n\n"
+                f"💰 Стоимость: {config['price']}₽/мес\n"
+                f"🪙 Токенов в день: {config['daily_tokens'] or '∞'}\n\n"
+                f"Купить тариф?",
+                reply_markup=kb,
+            )
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("plan_buy:"))
+    async def buy_plan(callback: CallbackQuery):
+        plan_name = callback.data.split(":")[1]
+        try:
+            plan = Plan(plan_name)
+        except ValueError:
+            await callback.answer("Неизвестный тариф", show_alert=True)
+            return
+
+        config = PLAN_CONFIGS[plan]
+
+        try:
+            from payment import create_payment
+            payment_id, confirmation_url = await create_payment(
+                user_id=callback.from_user.id,
+                amount=config["price"],
+            )
+
+            async with async_session() as session:
+                from models import Payment
+                payment = Payment(
+                    user_id=callback.from_user.id,
+                    yookassa_payment_id=payment_id,
+                    amount=config["price"],
+                )
+                session.add(payment)
+                await session.commit()
+
+            plan_names = {
+                Plan.STANDARD: "⭐ Стандарт",
+                Plan.EXTENDED: "💎 Расширенный",
+                Plan.UNLIMITED: "♾️ Безлимит",
+            }
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Перейти к оплате", url=confirmation_url)],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="plans")],
+            ])
+            await callback.message.edit_text(
+                f"💳 Оплата тарифа {plan_names[plan]}.\n"
+                f"Сумма: {config['price']}₽\n\n"
+                "Нажми кнопку ниже для перехода к оплате:",
+                reply_markup=kb,
+            )
+        except Exception as e:
+            await callback.message.edit_text(
+                f"❌ Ошибка: {str(e)}\n"
+                "Попробуй позже.",
+                reply_markup=main_menu_keyboard(),
+            )
         await callback.answer()
 
     # === History ===
@@ -200,10 +329,24 @@ async def main():
                 session.add(history)
                 await session.commit()
 
+            # Показать остаток токенов
+            async with async_session() as session:
+                result = await session.execute(
+                    select(User).where(User.telegram_id == callback.from_user.id)
+                )
+                fresh_user = result.scalar_one()
+                tokens_left = "∞" if fresh_user.plan == Plan.UNLIMITED else fresh_user.tokens
+
+            after_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎨 Ещё картинку", callback_data="process_start")],
+                [InlineKeyboardButton(text="◀️ В меню", callback_data="back_to_menu")],
+            ])
+
             await bot.send_photo(
                 chat_id=callback.from_user.id,
                 photo=BufferedInputFile(result_photo, filename="result.jpg"),
-                caption="✅ Готово! Вот твоё изображение.",
+                caption=f"✅ Готово! Вот твоё изображение.\n\n🪙 Остаток токенов: {tokens_left}",
+                reply_markup=after_keyboard,
             )
         except Exception as e:
             if user.plan != Plan.UNLIMITED:
