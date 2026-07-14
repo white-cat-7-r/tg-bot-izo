@@ -3,6 +3,7 @@ import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -201,7 +202,7 @@ async def main():
 
             await bot.send_photo(
                 chat_id=callback.from_user.id,
-                photo=io.BytesIO(result_photo),
+                photo=BufferedInputFile(result_photo, filename="result.jpg"),
                 caption="✅ Готово! Вот твоё изображение.",
             )
         except Exception as e:
