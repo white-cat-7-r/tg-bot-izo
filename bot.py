@@ -215,36 +215,6 @@ async def main():
             )
         await callback.answer()
 
-    # === History ===
-    @dp.callback_query(F.data == "history")
-    async def show_history(callback: CallbackQuery):
-        async with async_session() as session:
-            result = await session.execute(
-                select(ProcessingHistory)
-                .where(ProcessingHistory.user_id == callback.from_user.id)
-                .order_by(ProcessingHistory.created_at.desc())
-                .limit(10)
-            )
-            history = result.scalars().all()
-
-        if not history:
-            await callback.message.edit_text(
-                "📜 История пуста.\n\nНапиши что хочешь — и я сгенерирую картинку!",
-                reply_markup=main_menu_keyboard(),
-            )
-            await callback.answer()
-            return
-
-        lines = ["📜 Последние генерации:\n"]
-        for h in history:
-            style = STYLES.get(h.style, {}).get("name", h.style)
-            status = "✅" if h.status == "completed" else "⏳"
-            date = h.created_at.strftime("%d.%m.%Y %H:%M")
-            lines.append(f"{status} {date} — {style}")
-
-        await callback.message.edit_text("\n".join(lines), reply_markup=main_menu_keyboard())
-        await callback.answer()
-
     # === Process: start ===
     @dp.callback_query(F.data == "process_start")
     async def process_start(callback: CallbackQuery, state: FSMContext, bot: Bot):

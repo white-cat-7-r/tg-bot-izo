@@ -9,9 +9,6 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🎨 Создать картинку", callback_data="process_start"),
         InlineKeyboardButton(text="🪙 Мой баланс", callback_data="balance"),
     )
-    builder.row(
-        InlineKeyboardButton(text="📜 История", callback_data="history"),
-    )
     return builder.as_markup()
 
 
