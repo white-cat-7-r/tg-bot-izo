@@ -5,10 +5,11 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select
 from database import async_session
 from models import User, ProcessingHistory
-from keyboards.inline import styles_keyboard, confirm_keyboard, pay_keyboard
+from keyboards.inline import styles_keyboard, confirm_keyboard, pay_keyboard, main_menu_keyboard
 from ai_processor import process_photo
 from utils.styles import get_style_prompt, STYLES
-from config import settings
+from token_manager import deduct_tokens, reset_daily_tokens
+from config import settings, TOKEN_COST_PER_GENERATION, Plan
 import io
 
 router = Router()
@@ -85,7 +86,7 @@ async def received_prompt(message: Message, state: FSMContext):
         f"🎨 Обработка:\n"
         f"• Стиль: {style['name']}\n"
         f"• Промпт: {full_prompt}\n"
-        f"• Стоимость: {settings.PRICE_PER_PROCESSING} ₽\n\n"
+        f"• Стоимость: {TOKEN_COST_PER_GENERATION} токенов\n\n"
         f"Подтвердить?",
         reply_markup=confirm_keyboard(),
     )
@@ -104,7 +105,7 @@ async def skip_prompt(callback: CallbackQuery, state: FSMContext):
         f"🎨 Обработка:\n"
         f"• Стиль: {style['name']}\n"
         f"• Промпт: {full_prompt}\n"
-        f"• Стоимость: {settings.PRICE_PER_PROCESSING} ₽\n\n"
+        f"• Стоимость: {TOKEN_COST_PER_GENERATION} токенов\n\n"
         f"Подтвердить?",
         reply_markup=confirm_keyboard(),
     )
@@ -116,25 +117,57 @@ async def skip_prompt(callback: CallbackQuery, state: FSMContext):
 async def confirm_processing(callback: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
     
-    async with async_session() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == callback.from_user.id)
-        )
-        user = result.scalar_one()
-        
-        if user.balance < settings.PRICE_PER_PROCESSING:
-            await callback.message.edit_text(
-                f"❌ Недостаточно средств.\n"
-                f"Баланс: {user.balance} ₽\n"
-                f"Нужно: {settings.PRICE_PER_PROCESSING} ₽\n\n"
-                "Пополни баланс:",
-                reply_markup=pay_keyboard(settings.PRICE_PER_PROCESSING),
+    # Check test account first
+    if callback.from_user.id == settings.TEST_USER_ID:
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == callback.from_user.id)
             )
-            await callback.answer()
-            return
-        
-        user.balance -= settings.PRICE_PER_PROCESSING
-        await session.commit()
+            user = result.scalar_one()
+            # Ensure unlimited plan for test user
+            if user.plan != Plan.UNLIMITED:
+                from token_manager import activate_plan
+                await activate_plan(session, user, Plan.UNLIMITED)
+    else:
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == callback.from_user.id)
+            )
+            user = result.scalar_one()
+            
+            # Reset daily tokens if needed
+            user = await reset_daily_tokens(session, user)
+            
+            # Check if unlimited
+            if user.plan != Plan.UNLIMITED:
+                # Check if user has enough tokens
+                if user.tokens < TOKEN_COST_PER_GENERATION:
+                    await callback.message.edit_text(
+                        f"❌ Недостаточно токенов.\n"
+                        f"Токенов: {user.tokens}\n"
+                        f"Нужно: {TOKEN_COST_PER_GENERATION}\n\n"
+                        "Пополни баланс или купи тариф:",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="🛒 Купить тариф", callback_data="plans")],
+                            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
+                        ]),
+                    )
+                    await callback.answer()
+                    return
+                
+                # Deduct tokens
+                success = await deduct_tokens(session, user, TOKEN_COST_PER_GENERATION)
+                if not success:
+                    await callback.message.edit_text(
+                        "❌ Ошибка списания токенов. Попробуй позже.",
+                        reply_markup=main_menu_keyboard(),
+                    )
+                    await callback.answer()
+                    return
+            else:
+                # Unlimited - just track usage
+                user.daily_tokens_used += TOKEN_COST_PER_GENERATION
+                await session.commit()
     
     await callback.message.edit_text("⏳ Обрабатываю фото... Это займёт 30-60 секунд.")
     await callback.answer()
@@ -161,17 +194,21 @@ async def confirm_processing(callback: CallbackQuery, state: FSMContext, bot: Bo
             caption="✅ Готово! Вот твоё обработанное фото.",
         )
     except Exception as e:
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == callback.from_user.id)
-            )
-            user = result.scalar_one()
-            user.balance += settings.PRICE_PER_PROCESSING
-            await session.commit()
+        # Refund tokens on error (not for unlimited)
+        if callback.from_user.id != settings.TEST_USER_ID:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(User).where(User.telegram_id == callback.from_user.id)
+                )
+                user = result.scalar_one()
+                if user.plan != Plan.UNLIMITED:
+                    user.tokens += TOKEN_COST_PER_GENERATION
+                    user.daily_tokens_used -= TOKEN_COST_PER_GENERATION
+                    await session.commit()
         
         await callback.message.answer(
             f"❌ Ошибка обработки: {str(e)}\n"
-            "Средства возвращены на баланс."
+            "Токены возвращены."
         )
     
     await state.clear()
