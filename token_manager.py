@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import User, Plan
 from config import PLAN_CONFIGS, TOKEN_COST_PER_GENERATION
