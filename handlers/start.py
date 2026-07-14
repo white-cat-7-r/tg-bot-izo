@@ -1,7 +1,9 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from keyboards.inline import main_menu_keyboard
-from database import get_or_create_user
+from database import get_or_create_user, async_session
+from token_manager import activate_plan
+from config import settings, Plan
 
 router = Router()
 
@@ -12,6 +14,16 @@ async def cmd_start(message: Message):
         telegram_id=message.from_user.id,
         username=message.from_user.username,
     )
+    
+    # Auto-activate unlimited for test account
+    if message.from_user.id == settings.TEST_USER_ID and user.plan != Plan.UNLIMITED:
+        async with async_session() as session:
+            await activate_plan(session, user, Plan.UNLIMITED)
+        await message.answer(
+            "🧪 Тестовый аккаунт активирован: безлимитный план!",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
     
     await message.answer(
         "👋 Привет! Я бот для AI-обработки фото.\n\n"
