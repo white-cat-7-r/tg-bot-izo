@@ -5,8 +5,8 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select
 from database import async_session
 from models import User, ProcessingHistory
-from keyboards.inline import styles_keyboard, confirm_keyboard, pay_keyboard, main_menu_keyboard
-from ai_processor import process_photo
+from keyboards.inline import styles_keyboard, confirm_keyboard, main_menu_keyboard
+from ai_processor import generate_image
 from utils.styles import get_style_prompt, STYLES
 from token_manager import deduct_tokens, reset_daily_tokens
 from config import settings, TOKEN_COST_PER_GENERATION, Plan
@@ -16,41 +16,35 @@ router = Router()
 
 
 class ProcessState(StatesGroup):
-    waiting_photo = State()
-    waiting_style = State()
     waiting_prompt = State()
+    waiting_style = State()
     confirm = State()
 
 
 @router.callback_query(F.data == "process_start")
 async def process_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "📸 Отправь мне фото для обработки.\n\n"
-        "Поддерживаются форматы: JPG, PNG, WebP"
+        "✏️ Напиши, что хочешь получить на картинке.\n\n"
+        "Например: \"кот в космосе\", \"закат над морем\", \"киберпанк город\""
     )
-    await state.set_state(ProcessState.waiting_photo)
+    await state.set_state(ProcessState.waiting_prompt)
     await callback.answer()
 
 
-@router.message(ProcessState.waiting_photo, F.photo)
-async def received_photo(message: Message, state: FSMContext, bot: Bot):
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    photo_bytes = await bot.download_file(file.file_path)
-    
-    await state.update_data(photo_bytes=photo_bytes.read())
-    
+@router.message(ProcessState.waiting_prompt, F.text)
+async def received_prompt(message: Message, state: FSMContext):
+    await state.update_data(user_prompt=message.text)
+
     await message.answer(
-        "Отлично! Фото получено.\n\n"
-        "Теперь выбери стиль обработки:",
+        "Отлично! Теперь выбери стиль обработки:",
         reply_markup=styles_keyboard(),
     )
     await state.set_state(ProcessState.waiting_style)
 
 
-@router.message(ProcessState.waiting_photo)
-async def wrong_photo(message: Message):
-    await message.answer("❌ Пожалуйста, отправь именно фото (не документ, не стикер).")
+@router.message(ProcessState.waiting_prompt)
+async def wrong_input(message: Message):
+    await message.answer("❌ Пожалуйста, напиши текстовый промпт.")
 
 
 @router.callback_query(F.data.startswith("style:"), ProcessState.waiting_style)
@@ -60,53 +54,16 @@ async def selected_style(callback: CallbackQuery, state: FSMContext):
     if not style:
         await callback.answer("Неизвестный стиль", show_alert=True)
         return
-    
+
     await state.update_data(style_key=style_key)
-    
-    await callback.message.edit_text(
-        f"✅ Стиль: {style['name']}\n\n"
-        "Теперь напиши промпт (что добавить/изменить) или нажми «Пропустить»:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏩ Пропустить", callback_data="prompt_skip")],
-        ]),
-    )
-    await state.set_state(ProcessState.waiting_prompt)
-    await callback.answer()
-
-
-@router.message(ProcessState.waiting_prompt, F.text)
-async def received_prompt(message: Message, state: FSMContext):
-    await state.update_data(user_prompt=message.text)
     data = await state.get_data()
-    
-    style = STYLES[data["style_key"]]
-    full_prompt = get_style_prompt(data["style_key"], data.get("user_prompt", ""))
-    
-    await message.answer(
-        f"🎨 Обработка:\n"
-        f"• Стиль: {style['name']}\n"
-        f"• Промпт: {full_prompt}\n"
-        f"• Стоимость: {TOKEN_COST_PER_GENERATION} токенов\n\n"
-        f"Подтвердить?",
-        reply_markup=confirm_keyboard(),
-    )
-    await state.set_state(ProcessState.confirm)
+    full_prompt = get_style_prompt(style_key, data.get("user_prompt", ""))
 
-
-@router.callback_query(F.data == "prompt_skip", ProcessState.waiting_prompt)
-async def skip_prompt(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(user_prompt="")
-    data = await state.get_data()
-    
-    style = STYLES[data["style_key"]]
-    full_prompt = get_style_prompt(data["style_key"])
-    
     await callback.message.edit_text(
-        f"🎨 Обработка:\n"
-        f"• Стиль: {style['name']}\n"
-        f"• Промпт: {full_prompt}\n"
-        f"• Стоимость: {TOKEN_COST_PER_GENERATION} токенов\n\n"
-        f"Подтвердить?",
+        f"✅ Стиль: {style['name']}\n"
+        f"📝 Промпт: {full_prompt}\n\n"
+        f"Стоимость: {TOKEN_COST_PER_GENERATION} токенов\n\n"
+        f"Сгенерировать?",
         reply_markup=confirm_keyboard(),
     )
     await state.set_state(ProcessState.confirm)
@@ -116,101 +73,80 @@ async def skip_prompt(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "confirm_yes", ProcessState.confirm)
 async def confirm_processing(callback: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
-    
-    # Check test account first
-    if callback.from_user.id == settings.TEST_USER_ID:
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == callback.from_user.id)
-            )
-            user = result.scalar_one()
-            # Ensure unlimited plan for test user
-            if user.plan != Plan.UNLIMITED:
-                from token_manager import activate_plan
-                await activate_plan(session, user, Plan.UNLIMITED)
-    else:
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == callback.from_user.id)
-            )
-            user = result.scalar_one()
-            
-            # Reset daily tokens if needed
-            user = await reset_daily_tokens(session, user)
-            
-            # Check if unlimited
-            if user.plan != Plan.UNLIMITED:
-                # Check if user has enough tokens
-                if user.tokens < TOKEN_COST_PER_GENERATION:
-                    await callback.message.edit_text(
-                        f"❌ Недостаточно токенов.\n"
-                        f"Токенов: {user.tokens}\n"
-                        f"Нужно: {TOKEN_COST_PER_GENERATION}\n\n"
-                        "Пополни баланс или купи тариф:",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="🛒 Купить тариф", callback_data="plans")],
-                            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")],
-                        ]),
-                    )
-                    await callback.answer()
-                    return
-                
-                # Deduct tokens
-                success = await deduct_tokens(session, user, TOKEN_COST_PER_GENERATION)
-                if not success:
-                    await callback.message.edit_text(
-                        "❌ Ошибка списания токенов. Попробуй позже.",
-                        reply_markup=main_menu_keyboard(),
-                    )
-                    await callback.answer()
-                    return
-            else:
-                # Unlimited - just track usage
-                user.daily_tokens_used += TOKEN_COST_PER_GENERATION
-                await session.commit()
-    
-    await callback.message.edit_text("⏳ Обрабатываю фото... Это займёт 30-60 секунд.")
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == callback.from_user.id)
+        )
+        user = result.scalar_one()
+        user = await reset_daily_tokens(session, user)
+
+        if user.plan != Plan.UNLIMITED:
+            if user.tokens < TOKEN_COST_PER_GENERATION:
+                await callback.message.edit_text(
+                    f"❌ Недостаточно токенов.\n"
+                    f"Токенов: {user.tokens}\n"
+                    f"Нужно: {TOKEN_COST_PER_GENERATION}\n\n"
+                    "Пополни баланс или купи тариф.",
+                    reply_markup=main_menu_keyboard(),
+                )
+                await callback.answer()
+                return
+
+            success = await deduct_tokens(session, user, TOKEN_COST_PER_GENERATION)
+            if not success:
+                await callback.message.edit_text(
+                    "❌ Ошибка списания токенов. Попробуй позже.",
+                    reply_markup=main_menu_keyboard(),
+                )
+                await callback.answer()
+                return
+        else:
+            user.daily_tokens_used += TOKEN_COST_PER_GENERATION
+            await session.commit()
+
+    await callback.message.edit_text("⏳ Генерирую изображение... Это займёт 30-60 секунд.")
     await callback.answer()
-    
+
     try:
         full_prompt = get_style_prompt(data["style_key"], data.get("user_prompt", ""))
-        result_photo = await process_photo(data["photo_bytes"], full_prompt)
-        
+        result_photo = await generate_image(full_prompt)
+
         async with async_session() as session:
             history = ProcessingHistory(
                 user_id=user.id,
                 style=data["style_key"],
                 prompt=data.get("user_prompt", ""),
-                source_photo="uploaded",
-                result_photo="processed",
+                source_photo="text_prompt",
+                result_photo="generated",
                 status="completed",
             )
             session.add(history)
             await session.commit()
-        
+
         await bot.send_photo(
             chat_id=callback.from_user.id,
             photo=InputFile(io.BytesIO(result_photo), filename="result.jpg"),
-            caption="✅ Готово! Вот твоё обработанное фото.",
+            caption="✅ Готово! Вот твоё изображение.",
         )
     except Exception as e:
-        # Refund tokens on error (not for unlimited)
-        if callback.from_user.id != settings.TEST_USER_ID:
+        if user.plan != Plan.UNLIMITED:
             async with async_session() as session:
                 result = await session.execute(
                     select(User).where(User.telegram_id == callback.from_user.id)
                 )
-                user = result.scalar_one()
-                if user.plan != Plan.UNLIMITED:
-                    user.tokens += TOKEN_COST_PER_GENERATION
-                    user.daily_tokens_used -= TOKEN_COST_PER_GENERATION
+                u = result.scalar_one()
+                if u.plan != Plan.UNLIMITED:
+                    u.tokens += TOKEN_COST_PER_GENERATION
+                    u.daily_tokens_used -= TOKEN_COST_PER_GENERATION
                     await session.commit()
-        
+
         await callback.message.answer(
-            f"❌ Ошибка обработки: {str(e)}\n"
-            "Токены возвращены."
+            f"❌ Ошибка генерации: {str(e)}\n"
+            "Токены возвращены.",
+            reply_markup=main_menu_keyboard(),
         )
-    
+
     await state.clear()
 
 
@@ -218,9 +154,7 @@ async def confirm_processing(callback: CallbackQuery, state: FSMContext, bot: Bo
 async def cancel_processing(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
-        "❌ Обработка отменена.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ В меню", callback_data="back_to_menu")],
-        ]),
+        "❌ Генерация отменена.",
+        reply_markup=main_menu_keyboard(),
     )
     await callback.answer()

@@ -11,22 +11,32 @@ async def reset_daily_tokens(session: AsyncSession, user: User) -> User:
     """Reset daily token allocation if it's a new day."""
     now = datetime.now(MOSCOW_TZ)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    if user.last_reset_at is None or user.last_reset_at.replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ) < today_start:
-        # Check if plan expired
+
+    needs_reset = False
+    if user.last_reset_at is None:
+        needs_reset = True
+    else:
+        last_reset = user.last_reset_at
+        if last_reset.tzinfo is None:
+            last_reset = last_reset.replace(tzinfo=MOSCOW_TZ)
+        if last_reset < today_start:
+            needs_reset = True
+
+    if needs_reset:
         if user.plan != Plan.FREE and user.plan_expires_at:
-            if user.plan_expires_at < now:
+            expires = user.plan_expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=MOSCOW_TZ)
+            if expires < now:
                 user.plan = Plan.FREE
                 user.plan_expires_at = None
-        
+
         config = PLAN_CONFIGS[user.plan]
         user.tokens = config["daily_tokens"] if config["daily_tokens"] is not None else 999999
         user.daily_tokens_used = 0
         user.last_reset_at = now
         await session.commit()
-    
+
     return user
 
 

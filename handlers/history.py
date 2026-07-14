@@ -19,22 +19,22 @@ async def show_history(callback: CallbackQuery):
             .limit(10)
         )
         history = result.scalars().all()
-    
+
     if not history:
         await callback.message.edit_text(
-            "📜 История пуста.\n\nЗагрузи фото для обработки!",
+            "📜 История пуста.\n\nНапиши что хочешь — и я сгенерирую картинку!",
             reply_markup=main_menu_keyboard(),
         )
         await callback.answer()
         return
-    
-    lines = ["📜 Последние обработки:\n"]
+
+    lines = ["📜 Последние генерации:\n"]
     for h in history:
         style = STYLES.get(h.style, {}).get("name", h.style)
         status = "✅" if h.status == "completed" else "⏳"
         date = h.created_at.strftime("%d.%m.%Y %H:%M")
         lines.append(f"{status} {date} — {style}")
-    
+
     await callback.message.edit_text(
         "\n".join(lines),
         reply_markup=main_menu_keyboard(),

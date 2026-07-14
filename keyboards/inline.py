@@ -6,7 +6,7 @@ from utils.styles import STYLES
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="🎨 Обработать фото", callback_data="process_start"),
+        InlineKeyboardButton(text="🎨 Создать картинку", callback_data="process_start"),
         InlineKeyboardButton(text="🪙 Мой баланс", callback_data="balance"),
     )
     builder.row(
