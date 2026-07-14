@@ -3,6 +3,8 @@ from sqlalchemy import BigInteger, String, Integer, DateTime, ForeignKey, Enum a
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import enum
 
+from config import Plan
+
 
 class Base(DeclarativeBase):
     pass
@@ -16,13 +18,18 @@ class PaymentStatus(str, enum.Enum):
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     balance: Mapped[int] = mapped_column(Integer, default=0)
+    tokens: Mapped[int] = mapped_column(Integer, default=50)
+    plan: Mapped[Plan] = mapped_column(SAEnum(Plan), default=Plan.FREE)
+    plan_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    daily_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    last_reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    
+
     payments: Mapped[list["Payment"]] = relationship(back_populates="user")
     history: Mapped[list["ProcessingHistory"]] = relationship(back_populates="user")
 
