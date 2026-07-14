@@ -6,3 +6,4 @@ aiohttp==3.9.1
 yookassa==3.0.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
+tzdata==2024.1
