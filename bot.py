@@ -51,8 +51,11 @@ async def main():
 
     # === Back to menu ===
     @dp.callback_query(F.data == "back_to_menu")
-    async def back_to_menu(callback: CallbackQuery):
-        await callback.message.edit_text("Выбери действие:", reply_markup=main_menu_keyboard())
+    async def back_to_menu(callback: CallbackQuery, bot: Bot):
+        try:
+            await callback.message.edit_text("Выбери действие:", reply_markup=main_menu_keyboard())
+        except Exception:
+            await bot.send_message(callback.from_user.id, "Выбери действие:", reply_markup=main_menu_keyboard())
         await callback.answer()
 
     # === Balance ===
@@ -236,11 +239,18 @@ async def main():
 
     # === Process: start ===
     @dp.callback_query(F.data == "process_start")
-    async def process_start(callback: CallbackQuery, state: FSMContext):
-        await callback.message.edit_text(
-            "✏️ Напиши, что хочешь получить на картинке.\n\n"
-            "Например: \"кот в космосе\", \"закат над морем\", \"киберпанк город\""
-        )
+    async def process_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+        try:
+            await callback.message.edit_text(
+                "✏️ Напиши, что хочешь получить на картинке.\n\n"
+                "Например: \"кот в космосе\", \"закат над морем\", \"киберпанк город\""
+            )
+        except Exception:
+            await bot.send_message(
+                callback.from_user.id,
+                "✏️ Напиши, что хочешь получить на картинке.\n\n"
+                "Например: \"кот в космосе\", \"закат над морем\", \"киберпанк город\""
+            )
         await state.set_state(ProcessState.waiting_prompt)
         await callback.answer()
 
