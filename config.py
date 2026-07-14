@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     WEBHOOK_URL: str = Field(default="", description="URL для webhook ЮKassa")
     
     TEST_USER_ID: int = Field(default=0, description="Telegram ID тестового аккаунта с безлимитом")
+    TEST_MODE: bool = Field(default=False, description="Тестовый режим без реальной обработки фото")
     
     class Config:
         env_file = ".env"
